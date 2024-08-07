@@ -99,25 +99,45 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
             HID_END_COLLECTION,                                                                                       \
     }
 
-
+#define LOGI_HID_MOUSE_REPORT_DESC_64(bcnt)                                                                             \
+    {                                                                                                                 \
+        HID_USAGE_PAGE(HID_USAGE_GEN_DESKTOP), HID_USAGE(HID_USAGE_GEN_DESKTOP_MOUSE),                                \
+            HID_COLLECTION(HID_COLLECTION_APPLICATION), HID_USAGE(HID_USAGE_GEN_DESKTOP_POINTER),                     \
+            HID_COLLECTION(HID_COLLECTION_PHYSICAL), HID_REPORT_COUNT(bcnt), HID_REPORT_SIZE(1), HID_LOGICAL_MIN8(0), \
+            HID_LOGICAL_MAX8(1), HID_USAGE_PAGE(HID_USAGE_GEN_BUTTON), HID_USAGE_MIN8(1), HID_USAGE_MAX8(bcnt),       \
+            HID_INPUT(0x02), HID_REPORT_COUNT(2), HID_REPORT_SIZE(16), 0x16, 0x01, 0x80, 0x26, 0xff, 0x7F,            \
+            HID_USAGE_PAGE(HID_USAGE_GEN_DESKTOP), HID_USAGE(HID_USAGE_GEN_DESKTOP_X),                                \
+            HID_USAGE(HID_USAGE_GEN_DESKTOP_Y), HID_INPUT(6), HID_REPORT_COUNT(1), HID_REPORT_SIZE(8), 0x15, 0x81,    \
+            HID_LOGICAL_MAX8(127), HID_USAGE(HID_USAGE_GEN_DESKTOP_WHEEL), 0x81, 0x06, 0x95, 0x01, 0x05, 0x0c, 0x0a,  \
+            0x38, 0x02, 0x81, 0x06, HID_END_COLLECTION, 0x06, 0x00, 0xff, 0x09, 0xf1, HID_REPORT_SIZE(8),             \
+            HID_REPORT_COUNT(5), HID_LOGICAL_MIN8(0), HID_LOGICAL_MAX8(255), 0x81, 0x00, 0x06, 0x01,                  \
+            0xff,       /*   USAGE_PAGE (Vendor Defined Page 2) */                                                    \
+            0x09, 0x02, /*   USAGE (Vendor Usage 2) */                                                                \
+            0x95, 0x33, /*   REPORT_COUNT (7) */                                                                      \
+            0x81, 0x02, /*   OUTPUT (Data,Var,Abs) */                                                                 \
+            HID_END_COLLECTION,                                                                                       \
+    }
 static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
-static const uint8_t hid_report_desc[] =  HID_MOUSE_REPORT_DESC1(16);
+static const uint8_t hid_report_desc[] =  HID_MOUSE_REPORT_DESC1(16),hid_report_desc1[] = LOGI_HID_MOUSE_REPORT_DESC_64(16);
 static enum usb_dc_status_code usb_status;
+
 
 #define MOUSE_BTN_LEFT		0
 #define MOUSE_BTN_RIGHT		1
 
 enum mouse_report_idx {
 	MOUSE_BTN_REPORT_IDX = 0,
-	MOUSE_X_REPORT_IDX = 1,
-	MOUSE_Y_REPORT_IDX = 2,
+	MOUSE_X_REPORT_IDX = 2,
+	MOUSE_Y_REPORT_IDX = 4,
 	MOUSE_WHEEL_REPORT_IDX = 3,
-	MOUSE_REPORT_COUNT = 3072,
+	MOUSE_REPORT_COUNT = 64,
+	HB_REPORT_COUNT = 3072,
 };
 
 static uint8_t __aligned(sizeof(void *)) report[MOUSE_REPORT_COUNT];
+static uint8_t __aligned(sizeof(void *)) report1[HB_REPORT_COUNT];
 static K_SEM_DEFINE(report_sem, 0, 1);
-
+atomic_t usb_hid_report_sent;
 static inline void status_cb(enum usb_dc_status_code status, const uint8_t *param)
 {
 	usb_status = status;
@@ -172,6 +192,40 @@ static void input_cb(struct input_event *evt)
 
 INPUT_CALLBACK_DEFINE(NULL, input_cb);
 
+static void usb_status_cb(struct usbd_context *const usbd,
+				    const struct usbd_msg *const msg)
+{
+	switch (msg->type) {
+	case USBD_MSG_VBUS_READY:
+
+		break;
+
+	case USBD_MSG_VBUS_REMOVED:
+
+		break;
+
+	case USBD_MSG_RESUME:
+
+		break;
+
+	case USBD_MSG_SUSPEND:
+
+		break;
+
+	case USBD_MSG_RESET:
+
+		break;
+
+	case USBD_MSG_UDC_ERROR:
+
+		break;
+
+	case USBD_MSG_STACK_ERROR:
+
+		break;
+	}
+
+}
 #if defined(CONFIG_USB_DEVICE_STACK_NEXT)
 static int enable_usb_device_next(void)
 {
@@ -195,10 +249,52 @@ static int enable_usb_device_next(void)
 	return 0;
 }
 #endif /* IS_ENABLED(CONFIG_USB_DEVICE_STACK_NEXT) */
+const struct device *hid_dev,*hid_dev1,*hid_dev2;
+int16_t xy[16][2] = {{1,0},{1,0},{1,0},{1,0},{0,1},{0,1},{0,1},{0,1},{-1,0},{-1,0},{-1,0},{-1,0},{0,-1},{0,-1},{0,-1},{0,-1}};
+void input_callback(const struct device *dev) {
+	if(dev == hid_dev)
+	{
+		atomic_set_bit(&usb_hid_report_sent, 0);
+		if(atomic_test_and_clear_bit(&usb_hid_report_sent, 2))
+		{
+			report[MOUSE_X_REPORT_IDX+1] = xy[report[17]][0]>>8 & 0xff;
+			report[MOUSE_X_REPORT_IDX] = xy[report[17]][0] & 0xff;
+			report[MOUSE_Y_REPORT_IDX+1] = xy[report[17]][1]>>8 & 0xff;
+			report[MOUSE_Y_REPORT_IDX] = xy[report[17]][1] & 0xff;
+			hid_int_ep_write(hid_dev2, report, 64, NULL);
+			report[17] = (report[17]+1) % 16;
+		}
+	}
+	if(dev == hid_dev1)
+	{
+		atomic_set_bit(&usb_hid_report_sent, 1);
+	}
+	if(dev == hid_dev2)
+	{
+		atomic_set_bit(&usb_hid_report_sent, 2);
+		if(atomic_test_and_clear_bit(&usb_hid_report_sent, 0))
+		{
+			report[MOUSE_X_REPORT_IDX+1] = xy[report[17]][0]>>8 & 0xff;
+			report[MOUSE_X_REPORT_IDX] = xy[report[17]][0] & 0xff;
+			report[MOUSE_Y_REPORT_IDX+1] = xy[report[17]][1]>>8 & 0xff;
+			report[MOUSE_Y_REPORT_IDX] = xy[report[17]][1] & 0xff;
+			hid_int_ep_write(hid_dev, report, 64, NULL);
+			report[17] = (report[17]+1) % 16;
+		}
+		if(atomic_test_and_clear_bit(&usb_hid_report_sent, 1))
+		{
+			hid_int_ep_write(hid_dev1, report1, sizeof(report1), NULL);
+			report1[18]++;
+		}
+	}
+}
+
+static const struct hid_ops callbacks = {
+	.int_in_ready = input_callback,
+};
 
 int main(void)
 {
-	const struct device *hid_dev,*hid_dev1,*hid_dev2;
 	int ret;
 
 	if (!gpio_is_ready_dt(&led0)) {
@@ -226,12 +322,12 @@ int main(void)
 	}
 
 	usb_hid_register_device(hid_dev,
-				hid_report_desc, sizeof(hid_report_desc),
-				NULL);
+				hid_report_desc1, sizeof(hid_report_desc1),
+				&callbacks);
 	usb_hid_register_device(hid_dev1,
 				hid_report_desc, sizeof(hid_report_desc),
-				NULL);
-	usb_hid_register_device(hid_dev2, hid_report_desc, sizeof(hid_report_desc), NULL);				
+				&callbacks);
+	usb_hid_register_device(hid_dev2, hid_report_desc1, sizeof(hid_report_desc1), &callbacks);
 	usb_hid_init(hid_dev);
 	usb_hid_init(hid_dev1);
 	usb_hid_init(hid_dev2);
@@ -244,17 +340,29 @@ int main(void)
 		LOG_ERR("Failed to enable USB");
 		return 0;
 	}
-
+	bool once = true;
 	while (true) {
 		// k_sem_take(&report_sem, K_FOREVER);
-
+		k_sleep(K_MSEC(1000));
+		if(once)
+		{
+		once = false;
+		report[MOUSE_X_REPORT_IDX+1] = xy[report[17]][0]>>8 & 0xff;
+		report[MOUSE_X_REPORT_IDX] = xy[report[17]][0] & 0xff;
+		report[MOUSE_Y_REPORT_IDX+1] = xy[report[17]][1]>>8 & 0xff;
+		report[MOUSE_Y_REPORT_IDX] = xy[report[17]][1] & 0xff;
 		ret = hid_int_ep_write(hid_dev, report, 64, NULL);
-		ret = hid_int_ep_write(hid_dev1, report, sizeof(report), NULL);
-		ret = hid_int_ep_write(hid_dev2, report, 64, NULL);
+		atomic_set_bit(&usb_hid_report_sent, 0);
+		report[17] = (report[17]+1) % 16;
+		ret = hid_int_ep_write(hid_dev1, report1, sizeof(report1), NULL);
+		atomic_set_bit(&usb_hid_report_sent, 1);
+		atomic_set_bit(&usb_hid_report_sent, 2);
+		report1[18]++;
+
 		if (ret) {
 			LOG_ERR("HID write error, %d", ret);
 		}
-
+		}
 		/* Toggle LED on sent report */
 		ret = gpio_pin_toggle(led0.port, led0.pin);
 		if (ret < 0) {
